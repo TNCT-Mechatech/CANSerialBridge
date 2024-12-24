@@ -1,5 +1,3 @@
-#ifdef SB_CANFD
-
 /**
 * @file CANSerialBridge.cpp
 * @brief Communication library for communicating binary packet structures between CAN FD devices.
@@ -11,25 +9,24 @@
 
 /**
 * @brief CANSerialBridge class constructor.
-* @param[in] dev (SerialDev class pointer) An argument that indicates a serial device class object.
-* @param[in] buff_size Receive buffer size.(bytes)
+* @param[in] dev (ACAN2517FD class pointer) An argument that indicates a CAN FD device class object.
 */
 CANSerialBridge::CANSerialBridge(ACAN2517FD *dev)
-        : _dev(dev), _id_list(), _error_count(0) {}
+        : _dev(dev), _id_list() {}
 
 /**
 * @brief A function that registers the message frame to be used.
 * @param[in] id (Message identification number) A number to identify the message.
-* The number can be specified from 0x00 to 0xFF, and up to 256 types of messages can be added.
+* The number can be specified from 0x00 to 0xFFFFFFFF.
 * However, you cannot add more messages than specified by CANSerialBridge::STRUCT_MAX_NUM.
-* @param[in] str (sb::MessageInterface class pointer) A data structure object used to send and receive data.
+* @param[in] frame (sb::MessageInterface class pointer) A data structure object used to send and receive data.
 * @return int Whether the message frame was added successfully.
 * @retval  0 : Success.
-* @retval -1 : Failure. The argument str specified was NULL.
+* @retval -1 : Failure. The argument frame specified was NULL.
 * @retval -2 : Failure. The number of registered message frames has reached the upper limit.
 */
-int CANSerialBridge::add_frame(CANSerialBridge::frame_id id, sb::CANMessageInterface *str) {
-    if (str == NULL) {
+int CANSerialBridge::add_frame(CANSerialBridge::frame_id id, sb::MessageInterface *frame) {
+    if (frame == NULL) {
         return -1;
     }
 
@@ -37,14 +34,14 @@ int CANSerialBridge::add_frame(CANSerialBridge::frame_id id, sb::CANMessageInter
     int order = _id_2_order(id);
     if (order >= 0) {
         //  update structure
-        _str[order] = str;
+        _str[order] = frame;
         return 0;
     }
 
     //  find available order and register them.
     for (int i = 0; i < STRUCT_MAX_NUM; i++) {
         if (_str[i] == NULL) {
-            _str[i] = str;
+            _str[i] = frame;
             _id_list[i] = id;
             return 0;
         }
@@ -122,10 +119,9 @@ int CANSerialBridge::write(CANSerialBridge::frame_id id) {
 * Update the received data from the serial device.
 * (Note that this function must be called every time in a processing loop to get the data.)
 * @return int Data acquisition status.
-* @retval  0 : Updated message.
-* @retval -1 : Message not received.
-* @retval -2 : Received packet is invalid.
-* @retval -3 : The id of the received message is unregistered.
+* @retval UpdateFrameStatus::UPDATE_SUCCESS : Updated message.
+* @retval UpdateFrameStatus::NO_MESSAGE : Message not received.
+* @retval UpdateFrameStatus::UNREGISTERED_ID : The id of the received message is unregistered.
 */
 int CANSerialBridge::update() {
     //  update frame
@@ -133,9 +129,9 @@ int CANSerialBridge::update() {
 }
 
 /**
-* @brief A function that converts id to the number of array elements.(private)
+* @brief Returns the array index of the frame stored in the array.(private)
 * @param[in] id Message identification number.
-* @return int Number of elements or error.
+* @return int Index of element or error.
 * @retval -1 : Its id is not included in the array.
 */
 int CANSerialBridge::_id_2_order(frame_id id) {
@@ -148,18 +144,13 @@ int CANSerialBridge::_id_2_order(frame_id id) {
 }
 
 /**
-* @brief Update the message from the packet data obtained from the serial device.
-* The acquired packet data is checked for consistency from the packet length and checksum,
-*  and passed to the ID registration message.
-* @return int The number of received message.
-* @retval  0 : Updated message.
-* @retval -1 : Message not received.
-* @retval -2 : Received packet is invalid.
-* @retval -3 : The id of the received message is unregistered.
+* @brief Update the message from the packet data obtained from the CAN FD device.
+* @return int The status of the update operation.
+* @retval UpdateFrameStatus::UPDATE_SUCCESS : Updated message.
+* @retval UpdateFrameStatus::NO_MESSAGE : Message not received.
+* @retval UpdateFrameStatus::UNREGISTERED_ID : The id of the received message is unregistered.
 */
 int CANSerialBridge::_update_frame() {
-    int received_count = 0;
-
     //  Update one frame by one call for improving data integrity
     if (_dev->available()) {
         acan2517fd::CANFDMessage canfdMessage;
@@ -169,7 +160,7 @@ int CANSerialBridge::_update_frame() {
 
         //  failed to receive
         if (!is_received) {
-            return -1;
+            return UpdateFrameStatus::NO_MESSAGE;
         }
 
         //  get order by frame_id
@@ -177,48 +168,25 @@ int CANSerialBridge::_update_frame() {
 
         if (order < 0) {
             //  failed to find message
-            return -3;
+            return UpdateFrameStatus::UNREGISTERED_ID;
         }
 
-        //  summary of data for check sum
-        uint32_t sum = 0;
-        //  add all data
-        for (int i = 0; i < _str[order]->size() - 1; i++) {
-            sum += canfdMessage.data[i];
-        }
+        //  insert data to message
+        memcpy(_str[order]->ptr(), &canfdMessage.data, _str[order]->size());
 
-        //  check summary of data, message data length
-        if (canfdMessage.data[_str[order]->size() - 1] == (uint8_t) (sum & 0xFF)) {
-            //  insert data to message
-            memcpy(_str[order]->ptr(), &canfdMessage.data, _str[order]->size());
+        //  unpack message
+        _str[order]->unpacking();
 
-            //  unpack message
-            _str[order]->unpacking();
-        } else {
-            _error_count++;
-
-            //  message is invalid
-            return -2;
-        }
+        return UpdateFrameStatus::UPDATE_SUCCESS;
     }
-    return -1;;
+    return UpdateFrameStatus::NO_MESSAGE;
 }
 
 /**
- * Get count of error
- * @return error count
- */
-int CANSerialBridge::error_count() {
-    return _error_count;
-}
-
-/**
- * Reset count of error
- */
-void CANSerialBridge::reset_error_count() {
-    _error_count = 0;
-}
-
+* @brief Returns the optimal packet size for sending.
+* @param[in] size (uint8_t) The size of the data to be sent.
+* @return int The optimal packet size.
+*/
 int CANSerialBridge::find_optimal_size(uint8_t size) {
     uint8_t optimal_size = 8;
 
@@ -240,5 +208,3 @@ int CANSerialBridge::find_optimal_size(uint8_t size) {
 
     return optimal_size;
 }
-
-#endif  //#ifdef SB_CANFD

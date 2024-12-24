@@ -1,5 +1,3 @@
-#ifdef SB_CANFD
-
 #ifndef _CAN_SERIAL_BRIDGE_HPP_
 #define _CAN_SERIAL_BRIDGE_HPP_
 
@@ -21,17 +19,20 @@ class CANSerialBridge
 public:
     typedef uint32_t frame_id;
 
+    enum UpdateFrameStatus {
+        UPDATE_SUCCESS = 0,
+        NO_MESSAGE = -1,
+        UNREGISTERED_ID = -2
+    };
+
     CANSerialBridge(ACAN2517FD *dev);
 
-    int add_frame(frame_id id, sb::CANMessageInterface *str);
+    int add_frame(frame_id id, sb::MessageInterface *str);
     int rm_frame(frame_id id);
 
     int write(frame_id id);
 
     int update();
-
-    int error_count();
-    void reset_error_count();
 
 protected:
     enum{
@@ -43,14 +44,10 @@ private:
     int _update_frame();
     int find_optimal_size(uint8_t size);
 
-    sb::CANMessageInterface *_str[STRUCT_MAX_NUM];
+    sb::MessageInterface *_str[STRUCT_MAX_NUM];
     frame_id _id_list[STRUCT_MAX_NUM];
 
     ACAN2517FD *_dev;
-
-    int _error_count;
 };
 
 #endif //#ifndef _CAN_SERIAL_BRIDGE_HPP_
-
-#endif  //#ifdef SB_CANFD
